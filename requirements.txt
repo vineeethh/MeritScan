@@ -2,7 +2,6 @@
 google-generativeai>=0.8.0
 instructor>=1.4.0
 sentence-transformers>=3.0.0
-torch>=2.0.0
 
 # Vector Store
 qdrant-client>=1.10.0

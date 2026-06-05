@@ -1,12 +1,9 @@
 """
-Agent 5 — Structured Grading & Evaluation
+Agent 5 — Structured Grading and Evaluation with Chain-of-Thought (OpenRouter)
 
-Groups the reranked top chunks by candidate, then evaluates each candidate
-against the job requirements using Gemini 1.5 Pro. Strict Chain-of-Thought
-reasoning and Pydantic validation prevent hallucinated scores.
-
-Rate-limiting: Gemini 1.5 Pro free tier is ~5 RPM. A configurable sleep
-is inserted between calls. Pass apply_rate_limit=False in tests.
+Groups reranked chunks by candidate, then evaluates each candidate against job
+requirements using OpenRouter. Strict Chain-of-Thought reasoning and Pydantic
+validation prevent hallucinated scores.
 """
 
 import time
@@ -14,12 +11,10 @@ from collections import defaultdict
 from typing import List, Tuple, Dict
 
 import instructor
-import google.generativeai as genai
+from openai import OpenAI
 
 from models.schemas import ChunkWithContext, JobRequirements, CandidateEvaluation
-from config import GOOGLE_API_KEY, PRO_MODEL, GEMINI_PRO_CALL_DELAY
-
-genai.configure(api_key=GOOGLE_API_KEY)
+from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, FLASH_MODEL
 
 
 def grade_candidates(
@@ -28,20 +23,20 @@ def grade_candidates(
     apply_rate_limit: bool = True,
 ) -> List[CandidateEvaluation]:
     """
-    Groups top chunks by candidate file, evaluates each with Gemini Pro,
+    Groups top chunks by candidate file, evaluates each with OpenRouter,
     and returns evaluations sorted by overall_score descending.
     """
     candidate_chunks: Dict[str, List[ChunkWithContext]] = defaultdict(list)
     for chunk, _ in reranked_chunks:
         candidate_chunks[chunk.candidate_file].append(chunk)
 
-    client = _build_pro_client()
+    client = _build_openrouter_client()
     evaluations: List[CandidateEvaluation] = []
 
     for i, (candidate_file, chunks) in enumerate(candidate_chunks.items()):
         if i > 0 and apply_rate_limit:
-            print(f"  [Rate limit] Waiting {GEMINI_PRO_CALL_DELAY}s before next Pro call...")
-            time.sleep(GEMINI_PRO_CALL_DELAY)
+            print(f"  [Rate limit] Waiting 1 second before next evaluation...")
+            time.sleep(1)
 
         print(f"  Grading: {candidate_file}")
         evaluation = _evaluate_candidate(client, candidate_file, chunks, job_req)
@@ -54,10 +49,12 @@ def grade_candidates(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _build_pro_client():
-    return instructor.from_gemini(
-        client=genai.GenerativeModel(model_name=PRO_MODEL),
-        mode=instructor.Mode.GEMINI_JSON,
+def _build_openrouter_client():
+    return instructor.from_openai(
+        OpenAI(
+            api_key=OPENROUTER_API_KEY,
+            base_url=OPENROUTER_BASE_URL,
+        )
     )
 
 
@@ -127,6 +124,8 @@ Hire recommendation thresholds:
 """
 
     return client.chat.completions.create(
+        model=FLASH_MODEL,
         messages=[{"role": "user", "content": prompt}],
         response_model=CandidateEvaluation,
+        max_tokens=1200,
     )
