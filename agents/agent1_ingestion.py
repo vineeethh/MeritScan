@@ -1,8 +1,8 @@
 """
-Agent 1 — Ingestion & Global Context Enrichment
+Agent 1 — Ingestion & Global Context Enrichment (OpenRouter)
 
 Converts PDF resumes to layout-aware Markdown, splits by section headers,
-then uses Gemini Flash to generate a holistic global profile. That profile
+then uses OpenRouter to generate a holistic global profile. That profile
 is injected into every chunk so downstream retrieval never suffers from
 context fragmentation.
 """
@@ -10,15 +10,13 @@ context fragmentation.
 import os
 import uuid
 import instructor
-import google.generativeai as genai
+from openai import OpenAI
 import pymupdf4llm
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from typing import List
 
 from models.schemas import CandidateGlobalProfile, ChunkWithContext
-from config import GOOGLE_API_KEY, FLASH_MODEL
-
-genai.configure(api_key=GOOGLE_API_KEY)
+from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, FLASH_MODEL
 
 _HEADERS_TO_SPLIT = [
     ("#", "H1"),
@@ -100,12 +98,14 @@ def _fallback_character_split(md_text: str):
 
 def _generate_global_profile(full_resume_text: str, filename: str) -> CandidateGlobalProfile:
     """
-    Single Gemini Flash call over the entire document.
+    Single OpenRouter call over the entire document.
     Produces the structured macro-profile that gets injected into every chunk.
     """
-    client = instructor.from_gemini(
-        client=genai.GenerativeModel(model_name=FLASH_MODEL),
-        mode=instructor.Mode.GEMINI_JSON,
+    client = instructor.from_openai(
+        OpenAI(
+            api_key=OPENROUTER_API_KEY,
+            base_url=OPENROUTER_BASE_URL,
+        )
     )
 
     prompt = (
@@ -115,6 +115,7 @@ def _generate_global_profile(full_resume_text: str, filename: str) -> CandidateG
     )
 
     return client.chat.completions.create(
+        model=FLASH_MODEL,
         messages=[{"role": "user", "content": prompt}],
         response_model=CandidateGlobalProfile,
     )

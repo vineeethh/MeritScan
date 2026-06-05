@@ -1,24 +1,27 @@
 """
-Agent 3 — Stage-1 Hybrid Retrieval Engine
+Agent 3 — Stage-1 Hybrid Retrieval Engine (Ollama-powered)
 
 Combines two complementary retrieval strategies:
-  • Dense: Qdrant + BAAI/bge-small-en-v1.5 embeddings (semantic similarity)
+  • Dense: Ollama embeddings (via mistral-embed or similar)
   • Sparse: BM25Okapi (exact token / keyword matching)
 
-Both streams are merged via Reciprocal Rank Fusion (RRF) to maximize recall —
-semantically equivalent phrases AND exact framework names are both captured.
+Both streams are merged via Reciprocal Rank Fusion (RRF) to maximize recall.
+
+Embeddings stored in Qdrant Cloud for persistence.
 """
 
 from typing import List, Tuple
 import numpy as np
-from sentence_transformers import SentenceTransformer
+import requests
+import json
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from rank_bm25 import BM25Okapi
 
 from models.schemas import ChunkWithContext, JobRequirements
 from config import (
-    EMBEDDING_MODEL,
+    QDRANT_URL,
+    QDRANT_API_KEY,
     QDRANT_COLLECTION,
     EMBEDDING_DIM,
     DENSE_TOP_K,
@@ -26,8 +29,11 @@ from config import (
     HYBRID_TOP_K,
 )
 
-# Module-level singletons — loaded once per process
-_embedding_model: SentenceTransformer | None = None
+# Ollama configuration
+OLLAMA_BASE_URL = "http://localhost:11434"
+EMBEDDING_MODEL = "mxbai-embed-large"  # Powerful embedding model for Ollama (1024 dimensions)
+
+# Module-level singletons
 _qdrant_client: QdrantClient | None = None
 _bm25_index: BM25Okapi | None = None
 _indexed_chunks: List[ChunkWithContext] = []
@@ -35,24 +41,41 @@ _indexed_texts: List[str] = []
 
 
 # ---------------------------------------------------------------------------
-# Model / client accessors
+# Ollama API calls
 # ---------------------------------------------------------------------------
 
-def _get_embedding_model() -> SentenceTransformer:
-    global _embedding_model
-    if _embedding_model is None:
-        print(f"  Loading embedding model: {EMBEDDING_MODEL}")
-        _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-    return _embedding_model
+def _get_ollama_embedding(text: str) -> List[float]:
+    """Get embedding from Ollama via API."""
+    try:
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/embed",
+            json={
+                "model": EMBEDDING_MODEL,
+                "input": text,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        # Ollama returns embeddings in 'embeddings' field
+        if "embeddings" in data:
+            return data["embeddings"][0] if isinstance(data["embeddings"][0], list) else data["embeddings"]
+        else:
+            raise ValueError(f"Unexpected Ollama response: {data}")
+    except Exception as e:
+        print(f"  ERROR: Ollama connection failed: {e}")
+        print(f"  Make sure Ollama is running: ollama serve")
+        raise
 
 
 def _get_qdrant() -> QdrantClient:
     global _qdrant_client
     if _qdrant_client is None:
-        _qdrant_client = QdrantClient(":memory:")
-        _qdrant_client.create_collection(
-            collection_name=QDRANT_COLLECTION,
-            vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+        print(f"  Connecting to Qdrant Cloud...")
+        _qdrant_client = QdrantClient(
+            url=QDRANT_URL,
+            api_key=QDRANT_API_KEY,
         )
     return _qdrant_client
 
@@ -63,35 +86,57 @@ def _get_qdrant() -> QdrantClient:
 
 def index_chunks(chunks: List[ChunkWithContext]) -> None:
     """
-    Builds both the dense Qdrant index and the sparse BM25 index.
-    Each chunk's text is enriched with its global macro-profile before
-    encoding so the embedding captures the candidate's full context.
+    Builds Qdrant index with Ollama embeddings and BM25 sparse index.
+    Each chunk is enriched with macro-profile before encoding.
     """
     global _bm25_index, _indexed_chunks, _indexed_texts
 
     _indexed_chunks = chunks
     _indexed_texts = [_enrich_chunk_text(c) for c in chunks]
 
-    model = _get_embedding_model()
     client = _get_qdrant()
 
-    # Dense index
-    print(f"  Encoding {len(chunks)} chunks with {EMBEDDING_MODEL}...")
-    embeddings = model.encode(
-        _indexed_texts,
-        batch_size=32,
-        show_progress_bar=True,
-        normalize_embeddings=True,
+    # Get embeddings from Ollama
+    print(f"  Generating embeddings with Ollama ({EMBEDDING_MODEL})...")
+    embeddings = []
+    for i, text in enumerate(_indexed_texts):
+        if (i + 1) % 5 == 0:
+            print(f"    Embedded {i + 1}/{len(_indexed_texts)} chunks...")
+        emb = _get_ollama_embedding(text)
+        embeddings.append(emb)
+
+    print(f"  Retrieved {len(embeddings)} embeddings from Ollama")
+
+    # Detect embedding dimension from first embedding
+    embedding_dim = len(embeddings[0])
+    print(f"  Embedding dimension: {embedding_dim}")
+
+    # Delete existing collection if present
+    try:
+        client.delete_collection(collection_name=QDRANT_COLLECTION)
+        print(f"  Deleted existing collection: {QDRANT_COLLECTION}")
+    except Exception:
+        pass
+
+    # Create Qdrant collection
+    print(f"  Creating Qdrant collection: {QDRANT_COLLECTION}")
+    client.create_collection(
+        collection_name=QDRANT_COLLECTION,
+        vectors_config=VectorParams(size=embedding_dim, distance=Distance.COSINE),
     )
+
+    # Upload vectors to Qdrant Cloud
     points = [
-        PointStruct(id=i, vector=emb.tolist(), payload={"idx": i})
+        PointStruct(id=i, vector=emb, payload={"idx": i})
         for i, emb in enumerate(embeddings)
     ]
-    client.upsert(collection_name=QDRANT_COLLECTION, points=points)
+    print(f"  Uploading {len(points)} vectors to Qdrant Cloud...")
+    client.upsert(collection_name=QDRANT_COLLECTION, points=points, wait=True)
 
-    # Sparse BM25 index
+    # Build BM25 sparse index
     tokenized = [t.lower().split() for t in _indexed_texts]
     _bm25_index = BM25Okapi(tokenized)
+    print(f"  Built BM25 index for sparse retrieval\n")
 
 
 # ---------------------------------------------------------------------------
@@ -103,22 +148,33 @@ def hybrid_retrieve(
     top_k: int = HYBRID_TOP_K,
 ) -> List[Tuple[ChunkWithContext, float]]:
     """
-    Runs dense + sparse retrieval in parallel and fuses results via RRF.
+    Runs dense (Ollama) + sparse (BM25) retrieval and fuses via RRF.
     Returns up to top_k (chunk, rrf_score) pairs, highest score first.
     """
     query_text = _build_query_text(job_req)
 
-    # --- Dense retrieval ---
-    model = _get_embedding_model()
-    query_vec = model.encode([query_text], normalize_embeddings=True)[0]
+    # --- Dense retrieval (Ollama) ---
+    query_vec = _get_ollama_embedding(query_text)
     client = _get_qdrant()
 
-    dense_hits = client.search(
-        collection_name=QDRANT_COLLECTION,
-        query_vector=query_vec.tolist(),
-        limit=DENSE_TOP_K,
-    )
-    dense_ids = [hit.payload["idx"] for hit in dense_hits]
+    # Use REST API for search
+    import requests
+    search_url = f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/search"
+    search_payload = {
+        "vector": query_vec,
+        "limit": DENSE_TOP_K,
+        "with_payload": True
+    }
+    headers = {
+        "api-key": QDRANT_API_KEY,
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post(search_url, json=search_payload, headers=headers, timeout=30)
+    response.raise_for_status()
+    search_result = response.json()
+
+    dense_ids = [hit["payload"]["idx"] for hit in search_result.get("result", [])]
 
     # --- Sparse BM25 retrieval ---
     bm25_scores = _bm25_index.get_scores(query_text.lower().split())
@@ -147,11 +203,7 @@ def _reciprocal_rank_fusion(
 
 
 def _enrich_chunk_text(chunk: ChunkWithContext) -> str:
-    """
-    Prepends the candidate's global macro-profile to the chunk text.
-    This prevents context fragmentation: every embedding 'knows' who the
-    candidate is and what their overall profile looks like.
-    """
+    """Prepends candidate macro-profile to chunk."""
     p = chunk.global_profile
     header = f"[SECTION: {chunk.section_header}]\n" if chunk.section_header else ""
     return (

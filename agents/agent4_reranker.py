@@ -1,29 +1,45 @@
 """
-Agent 4 — Stage-2 Cross-Encoder Reranker
+Agent 4 — Stage-2 Reranking with Ollama
 
-Replaces the bi-encoder's approximate dot-product similarity with full
-cross-attention over [query, chunk] pairs. This eliminates the false
-positives that survive RRF and surfaces the most relevant passages
-for the final grading stage.
+Uses Ollama embeddings + cosine similarity to rerank chunks.
+Scores each [query, chunk] pair and returns top-N highest-scoring candidates.
 
-Model: BAAI/bge-reranker-base (runs locally, no API needed)
+This eliminates false positives from the hybrid retrieval stage.
 """
 
 from typing import List, Tuple
-from sentence_transformers import CrossEncoder
+import requests
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 from models.schemas import ChunkWithContext, JobRequirements
-from config import RERANKER_MODEL, RERANK_TOP_N
+from config import RERANK_TOP_N
 
-_reranker: CrossEncoder | None = None
+OLLAMA_BASE_URL = "http://localhost:11434"
+RERANKER_MODEL = "mxbai-embed-large"  # Same as dense model for consistency
 
 
-def _get_reranker() -> CrossEncoder:
-    global _reranker
-    if _reranker is None:
-        print(f"  Loading reranker model: {RERANKER_MODEL}")
-        _reranker = CrossEncoder(RERANKER_MODEL)
-    return _reranker
+def _get_ollama_embedding(text: str) -> List[float]:
+    """Get embedding from Ollama."""
+    try:
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/embed",
+            json={
+                "model": RERANKER_MODEL,
+                "input": text,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "embeddings" in data:
+            return data["embeddings"][0] if isinstance(data["embeddings"][0], list) else data["embeddings"]
+        else:
+            raise ValueError(f"Unexpected response: {data}")
+    except Exception as e:
+        print(f"  ERROR: Ollama reranker failed: {e}")
+        raise
 
 
 def rerank_chunks(
@@ -32,24 +48,41 @@ def rerank_chunks(
     top_n: int = RERANK_TOP_N,
 ) -> List[Tuple[ChunkWithContext, float]]:
     """
-    Scores every (query, chunk_text) pair with the cross-encoder.
-    Returns top_n chunks sorted by cross-attention relevance score (descending).
+    Reranks candidate chunks using Ollama embeddings + cosine similarity.
+    Returns top_n chunks sorted by relevance score (descending).
     """
-    reranker = _get_reranker()
+    chunks = [chunk for chunk, _ in candidates]
 
-    pairs = [(query, chunk.text) for chunk, _ in candidates]
-    scores: List[float] = reranker.predict(pairs).tolist()
+    if not chunks:
+        return []
 
-    ranked = sorted(
-        zip([c for c, _ in candidates], scores),
-        key=lambda x: x[1],
-        reverse=True,
-    )
-    return ranked[:top_n]
+    print(f"  Reranking {len(chunks)} chunks with Ollama...")
+
+    # Get query embedding
+    query_embedding = np.array(_get_ollama_embedding(query)).reshape(1, -1)
+
+    # Get chunk embeddings
+    chunk_embeddings = []
+    for i, chunk in enumerate(chunks):
+        if (i + 1) % 5 == 0:
+            print(f"    Reranked {i + 1}/{len(chunks)} chunks...")
+        emb = _get_ollama_embedding(chunk.text)
+        chunk_embeddings.append(emb)
+
+    chunk_embeddings = np.array(chunk_embeddings)
+
+    # Compute cosine similarity
+    similarities = cosine_similarity(query_embedding, chunk_embeddings)[0]
+
+    # Rank by similarity
+    ranked_indices = np.argsort(similarities)[::-1][:top_n]
+    reranked = [(chunks[i], float(similarities[i])) for i in ranked_indices]
+
+    return reranked
 
 
 def build_rerank_query(job_req: JobRequirements) -> str:
-    """Compact, structured query string for the cross-encoder."""
+    """Build a structured query for reranking."""
     return (
         f"Role: {job_req.job_title}\n"
         f"Domain: {job_req.domain}\n"

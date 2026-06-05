@@ -1,18 +1,16 @@
 """
-Agent 2 — Query Refinement & Schema Extraction
+Agent 2 — Query Refinement & Schema Extraction (OpenRouter)
 
 Converts a raw, unstructured job description into a deterministic
-JobRequirements object using Gemini Flash + Instructor/Pydantic.
+JobRequirements object using OpenRouter API + Instructor/Pydantic.
 All corporate filler is stripped; only exact technical parameters survive.
 """
 
 import instructor
-import google.generativeai as genai
+from openai import OpenAI
 
 from models.schemas import JobRequirements
-from config import GOOGLE_API_KEY, FLASH_MODEL
-
-genai.configure(api_key=GOOGLE_API_KEY)
+from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, FLASH_MODEL
 
 
 def refine_job_description(jd_text: str) -> JobRequirements:
@@ -20,9 +18,11 @@ def refine_job_description(jd_text: str) -> JobRequirements:
     Parses a job description and returns a structured JobRequirements object.
     Guaranteed to conform to the Pydantic schema via Instructor.
     """
-    client = instructor.from_gemini(
-        client=genai.GenerativeModel(model_name=FLASH_MODEL),
-        mode=instructor.Mode.GEMINI_JSON,
+    client = instructor.from_openai(
+        OpenAI(
+            api_key=OPENROUTER_API_KEY,
+            base_url=OPENROUTER_BASE_URL,
+        )
     )
 
     prompt = (
@@ -34,6 +34,7 @@ def refine_job_description(jd_text: str) -> JobRequirements:
     )
 
     return client.chat.completions.create(
+        model=FLASH_MODEL,
         messages=[{"role": "user", "content": prompt}],
         response_model=JobRequirements,
     )

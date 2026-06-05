@@ -11,7 +11,7 @@ Job Description (raw text)
         │
         ▼
 ┌───────────────────────────────────────────────────────┐
-│  Agent 2 — Query Refinement (Gemini 1.5 Flash)        │
+│  Agent 2 — Query Refinement (OpenRouter)              │
 │  Strips filler text → structured JobRequirements      │
 └───────────────────┬───────────────────────────────────┘
                     │
@@ -21,15 +21,15 @@ PDF Resumes ────────┼─────────────�
 ┌───────────────────────────────────────────────────────┐
 │  Agent 1 — Ingestion & Global Context Enrichment      │
 │  pymupdf4llm  →  MarkdownHeaderTextSplitter           │
-│  + Gemini Flash global profile injected into chunks   │
+│  + OpenRouter global profile injected into chunks     │
 └───────────────────┬───────────────────────────────────┘
                     │
                     ▼
 ┌───────────────────────────────────────────────────────┐
 │  Agent 3 — Hybrid Retrieval (Dense + Sparse + RRF)    │
-│  Qdrant (BAAI/bge-small-en-v1.5) ─┐                  │
-│                                   ├─ RRF → Top 50    │
-│  BM25Okapi (rank_bm25)  ──────────┘                  │
+│  Qdrant (Ollama mxbai-embed-large) ┐                 │
+│                                    ├─ RRF → Top 50   │
+│  BM25Okapi (rank_bm25)  ───────────┘                 │
 └───────────────────┬───────────────────────────────────┘
                     │
                     ▼
@@ -40,7 +40,7 @@ PDF Resumes ────────┼─────────────�
                     │
                     ▼
 ┌───────────────────────────────────────────────────────┐
-│  Agent 5 — Structured Grading (Gemini 1.5 Pro)        │
+│  Agent 5 — Structured Grading (OpenRouter)            │
 │  Instructor + Pydantic → Chain-of-Thought evaluation  │
 │  Scores: Technical / Experience / Education / Domain  │
 └───────────────────┬───────────────────────────────────┘
@@ -63,16 +63,20 @@ pip install -r requirements.txt
 
 > PyTorch is included in requirements. For GPU acceleration install the CUDA build manually.
 
-### 2. Configure your API key
+### 2. Configure your API keys
 
 ```bash
 cp .env.example .env
-# Edit .env and paste your Google AI Studio key:
-# GOOGLE_API_KEY=your_key_here
+# Edit .env and add your API keys:
+# OPENROUTER_API_KEY=your_openrouter_key
+# QDRANT_URL=your_qdrant_url
+# QDRANT_API_KEY=your_qdrant_api_key
 ```
 
-Get a free API key at [Google AI Studio](https://aistudio.google.com/app/apikey).  
-Free tier limits: Flash — 15 RPM / 1,500 RPD · Pro — ~5 RPM / 50–100 RPD.
+Required APIs:
+- **OpenRouter** (for candidate grading): Get API key at [openrouter.ai](https://openrouter.ai)
+- **Qdrant Cloud** (for vector database): Get free instance at [qdrant.tech](https://qdrant.tech/)
+- **Ollama** (for local embeddings): Download from [ollama.ai](https://ollama.ai)
 
 ---
 
