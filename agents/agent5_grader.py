@@ -15,6 +15,7 @@ from openai import OpenAI
 
 from models.schemas import ChunkWithContext, JobRequirements, CandidateEvaluation
 from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, FLASH_MODEL
+from guardrails.pii_masker import mask_pii
 
 
 def grade_candidates(
@@ -65,7 +66,7 @@ def _evaluate_candidate(
     job_req: JobRequirements,
 ) -> CandidateEvaluation:
     profile = chunks[0].global_profile
-    resume_excerpts = "\n\n---\n\n".join(c.text for c in chunks)
+    resume_excerpts = "\n\n---\n\n".join(mask_pii(c.text) for c in chunks)
 
     prompt = f"""You are a senior technical recruiter conducting a rigorous, unbiased candidate evaluation.
 

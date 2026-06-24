@@ -21,6 +21,7 @@ from agents.agent2_query import refine_job_description
 from agents.agent3_retrieval import index_chunks, hybrid_retrieve
 from agents.agent4_reranker import rerank_chunks, build_rerank_query
 from agents.agent5_grader import grade_candidates
+from guardrails.input_validator import validate_input
 from models.schemas import CandidateEvaluation
 from config import HYBRID_TOP_K, RERANK_TOP_N
 
@@ -31,12 +32,22 @@ def run_pipeline(jd_path: str, resumes_dir: str, output_path: str = "results.jso
     print("=" * 60 + "\n")
 
     # ------------------------------------------------------------------
-    # Agent 2: Refine job description
+    # Guardrail: Validate job description before any LLM call
     # ------------------------------------------------------------------
-    print("[Agent 2] Extracting structured job requirements...")
+    print("[Guardrail] Validating job description...")
     with open(jd_path, "r", encoding="utf-8") as f:
         jd_text = f.read()
 
+    guard = validate_input(jd_text, "job_description")
+    if not guard.passed:
+        print(f"  BLOCKED [{guard.layer}]: {guard.reason}")
+        sys.exit(1)
+    print(f"  Passed [{guard.layer}]: {guard.reason}\n")
+
+    # ------------------------------------------------------------------
+    # Agent 2: Refine job description
+    # ------------------------------------------------------------------
+    print("[Agent 2] Extracting structured job requirements...")
     job_req = refine_job_description(jd_text)
     print(f"  Role:             {job_req.job_title}")
     print(f"  Domain:           {job_req.domain}")

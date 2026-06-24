@@ -1,10 +1,10 @@
 """
 Agent 1 — Ingestion & Global Context Enrichment (OpenRouter)
 
-Converts PDF resumes to layout-aware Markdown, splits by section headers,
-then uses OpenRouter to generate a holistic global profile. That profile
-is injected into every chunk so downstream retrieval never suffers from
-context fragmentation.
+Converts PDF resumes to layout-aware Markdown using pymupdf4llm,
+splits by section headers, then uses OpenRouter to generate a holistic global
+profile. That profile is injected into every chunk so downstream retrieval
+never suffers from context fragmentation.
 """
 
 import os
@@ -17,6 +17,8 @@ from typing import List
 
 from models.schemas import CandidateGlobalProfile, ChunkWithContext
 from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, FLASH_MODEL
+from guardrails.pii_masker import mask_pii
+from guardrails.input_validator import validate_input
 
 _HEADERS_TO_SPLIT = [
     ("#", "H1"),
@@ -29,6 +31,15 @@ _FALLBACK_CHUNK_OVERLAP = 100
 _MIN_CHUNK_LENGTH = 40
 
 
+def _pdf_to_markdown(pdf_path: str) -> str:
+    return pymupdf4llm.to_markdown(
+        pdf_path,
+        page_chunks=False,
+        show_progress=False,
+        write_images=False,
+    )
+
+
 def extract_resume_chunks(pdf_path: str) -> List[ChunkWithContext]:
     """
     Full ingestion pipeline for a single PDF resume.
@@ -36,8 +47,13 @@ def extract_resume_chunks(pdf_path: str) -> List[ChunkWithContext]:
     """
     filename = os.path.basename(pdf_path)
 
-    # Step 1: PDF → Markdown (preserves tables, bullets, section structure)
-    md_text = pymupdf4llm.to_markdown(pdf_path)
+    # Step 1: PDF → structured Markdown (pymupdf4llm layout model)
+    md_text = _pdf_to_markdown(pdf_path)
+
+    # Guardrail: reject resumes containing adversarial/malicious content
+    guard = validate_input(md_text, "resume")
+    if not guard.passed:
+        raise ValueError(f"Resume '{filename}' blocked [{guard.layer}]: {guard.reason}")
 
     # Step 2: Split by Markdown headers for semantic continuity
     docs = _split_by_headers(md_text)
@@ -108,10 +124,12 @@ def _generate_global_profile(full_resume_text: str, filename: str) -> CandidateG
         )
     )
 
+    safe_text = mask_pii(full_resume_text[:15000])
+
     prompt = (
         "You are parsing a resume. Extract structured information precisely. "
         "Do not infer or guess — only report what is explicitly stated.\n\n"
-        f"Resume ({filename}):\n{full_resume_text[:15000]}"
+        f"Resume ({filename}):\n{safe_text}"
     )
 
     return client.chat.completions.create(

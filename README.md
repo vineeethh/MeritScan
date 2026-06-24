@@ -149,7 +149,7 @@ MeritScan/
 
 | Component | Why |
 |---|---|
-| **pymupdf4llm** | Preserves tables, bullets, and column layout in academic/professional PDFs |
+| **pymupdf4llm** | Converts PDFs to layout-aware Markdown while preserving section structure and table content |
 | **MarkdownHeaderTextSplitter** | Splits at section boundaries (Experience, Projects) not arbitrary token counts |
 | **BAAI/bge-small-en-v1.5** | Top-tier open-source English embedding model; runs locally, no API needed |
 | **BM25Okapi** | Catches exact framework names (e.g. `FastAPI`, `BioBERT`) that semantic search misses |

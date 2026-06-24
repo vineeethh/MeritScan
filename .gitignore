@@ -32,7 +32,10 @@ MANIFEST
 venv/
 ENV/
 env/
-.venv
+.venv/
+
+# Python version pin (pyenv)
+.python-version
 
 # IDE
 .vscode/
